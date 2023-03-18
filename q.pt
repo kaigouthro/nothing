@@ -1,0 +1,540 @@
+
+from typing import List
+import time
+
+SL_TRAILNG = "trailingstoploss"
+TP = "takeprofit"
+SL = "stopLoss"
+LIMIT = "limit"
+STOP = "trailingstop"
+MARKET = "marker"
+
+
+
+class ord:
+    def __init__(
+        self,
+        strat,
+        id: str,
+        direction: str,
+        side: str,
+        type: str,
+        sz: float,
+        price: float,
+        lvg: float,
+        ):
+
+        self.comment = "ord"
+        self.side = side
+        self.direction = direction
+        self.id = id if id else strat.new_ord_id()
+        self.lvg = strat.cfg.lvg if lvg == None else lvg
+        self.price = price
+        self.sz = strat.restrict_order_to_available_size(
+            sz if sz != None else strat.cfg.default_sz / 100 * strat.funds.balance,
+            price if price != None else strat.price,
+            lvg if lvg != None else strat.cfg.lvg,
+        )
+        self.val = self.sz * self.price
+        self.margin = 1 / self.lvg * self.val
+        self.sl_pct = strat.cfg.sl_pct if strat.cfg.sl_enabled else None
+        self.fee = strat.cfg.maker_fee if type == LIMIT else strat.cfg.taker_fee
+        self.time = time.time()
+        self.type = MARKET if type == None else type
+        self.status = "immediate" if self.type == MARKET else "pending"
+
+
+class data:
+    def __init__(self, sz: float, price: float):
+        self.sz = sz
+        self.side = None
+        self.commission = None
+        self.entry_bar_index = None
+        self.entry_comment = None
+        self.entry_id = None
+        self.entryprc = price
+        self.entry_time = None
+        self.exit_bar_index = None
+        self.exit_comment = None
+        self.exit_id = None
+        self.exit_prc = None
+        self.exit_time = None
+        self.gross_profit = None
+        self.net_profit = None
+        self.direction = None
+        self.type = type
+
+
+class trade:
+    def __init__(
+        self,
+        strat,
+        side: str,
+        type: str,
+        sz: float,
+        price: float,
+        comment: str,
+        lvg,
+    ):
+        self.id = strat.new_trade_id()
+        self.sz = sz
+        self.entryprc = price
+        self.sl_pct = strat.cfg.sl_pct if strat.cfg.sl_enabled else None
+        self.tp_enabled = True if strat.cfg.tp_enabled else False
+        self.tp_targets_count = (
+            max(1, strat.cfg.tp_targets_count)
+            if self.tp_enabled and strat.cfg.tp_targets_count > 0
+            else 0
+        )
+        self.tp_sz_pct = (
+            strat.cfg.tp_sz_pct
+            if self.tp_enabled and self.tp_targets_count > 0
+            else 0.0
+        )
+        self.tp_step_perc = (
+            strat.cfg.tp_step_perc
+            if self.tp_enabled and strat.cfg.tp_step_perc
+            else None
+        )
+        self.tp_targets = (
+            self.get_targets(self.entryprc, self.tp_step_perc, self.tp_targets_count)
+            if self.tp_enabled
+            else []
+        )
+        self.sl_enabled = True if strat.cfg.sl_enabled else False
+        self.sl_pct = strat.cfg.sl_pct if strat.cfg.sl_pct and self.sl_enabled else None
+        self.sl_trail_enabled = True if strat.cfg.sl_trail_enabled else False
+        self.sl_trail_pct = strat.cfg.sl_trail_pct if self.sl_trail_enabled else None
+        self.sl_trig_pct = strat.cfg.sl_activate_dist if self.sl_trail_enabled else 0.0
+        self.sl_trail_activated = True if self.sl_trig_pct == 0 else False
+        self.tsl_peak = strat.price if self.sl_trail_enabled else None
+        self.taker_fee = strat.cfg.taker_fee
+        self.lvg = lvg if lvg else strat.cfg.lvg
+        self.margin = strat.calc_ord_margin(self.sz, self.lvg, self.entryprc)
+        self.val = self.sz * self.entryprc
+        self.status = "open"
+        self.profit = 0.0
+        self.max_draw_down = 0.0
+        self.max_runup = 0.0
+        self.entry_time = time.time()
+        self.entry_comment = ""
+        self.data = data(self.sz, self.entryprc)
+
+    def profit(self, price):
+        self.profit = (price / self.entryprc - 1) * self.val
+
+    def get_targets(self, val, percent_per_step, targets_count):
+        self.tp_targets = []
+        for i in range(targets_count):
+            self.tp_targets.append(val + (val * percent_per_step * (i + 1)))
+        return self.tp_targets
+
+    def update_max_draw_down(self, price):
+        self.max_draw_down = (price / self.entryprc - 1) * self.val
+
+    def update_max_runup(self, price):
+        self.max_runup = (price / self.entryprc - 1) * self.val
+
+    def sz(self):
+        return self.sz
+
+
+class funds:
+    def __init__(self, cfg):
+        self.currency = "USD"
+        self.balance = cfg.initial_equity
+        self.equity = cfg.initial_equity
+        self.open_profit = 0.0
+        self.pending_fees = 0.0
+        self.margin = 0.0
+        self.open_profit = 0.0
+        self.pending_margin = 0.0
+        self.margin_level = 0.0
+
+
+class cfg:
+    def __init__(self):
+        self.symbol = "BTCUSDT"
+        self.initial_equity = 1000.0
+        self.initial_wallet = 1000.0
+        self.tp_targets_count = 5
+        self.tp_sz_pct = 0.5
+        self.sl_enabled = True
+        self.sl_pct = 0.02
+        self.sl_activate_dist = 0.005
+        self.sl_trail_pct = 0.001
+        self.sl_trail_enabled = True
+        self.tp_enabled = True
+        self.tp_step_perc = 0.005
+        self.entry_max_type = "usd"
+        self.entry_max = 1000.0
+        self.position_max_usd = 1000.0
+        self.lvg = 1.0
+        self.ord_max_type = "usd"
+        self.ord_max = 1000.0
+        self.hedge_mode = False
+        self.ord_minimum = 10.0
+        self.risk = 0.05
+        self.slippage = 0.0001
+        self.taker_fee = 0.0004
+        self.maker_fee = 0.0002
+
+
+class tracking:
+    def __init__(self, strat):
+        self.note = ""
+        self.starting_bal = strat.cfg.initial_equity
+        self.current_bal = strat.cfg.initial_equity
+        self.peak_bal = strat.cfg.initial_equity
+        self.low_bal = strat.cfg.initial_equity
+        self.open_trades = 0
+        self.total_trades = 0
+        self.total_winning_trades = 0
+        self.total_losing_trades = 0
+        self.max_consecutive_wins = 0
+        self.max_consecutive_losses = 0
+        self.gross_profit = 0.0
+        self.avg_win = 0.0
+        self.avg_loss = 0.0
+        self.avg_profit_per_trade = 0.0
+        self.win_loss_ratio = 0.0
+        self.profit_factor = 0.0
+        self.commission_paid = 0.0
+        self.max_draw_down = 0.0
+        self.net_profit = 0.0
+        self.percent_profitable = 0.0
+
+
+
+#############################
+
+
+
+class strat:
+    def __init__(self, initial_equity: float):
+        self.cfg = cfg()
+        self.tracking = tracking(self)
+        self.funds = funds(self.cfg)
+        self.funds.equity = self.cfg.initial_equity
+        self.funds.balance = self.cfg.initial_wallet
+        self.closed_trades: List[trade] = []
+        self.open_trades: List[trade] = []
+        self.ords: List[ord] = []
+        self.current_bar_index = 0
+        self.price = 100.0
+        self.ord_ids = 0
+
+    def restrict_order_to_available_size(self, sz: float, price: float, lvg: float):
+        max_funds: float = min(self.cfg.entry_max, self.funds.balance)
+        return min(max_funds / price, abs(sz))
+
+    @staticmethod
+    def calc_unbound_margin(self, sz: float, lvg: float, price: float):
+        return sz * price / lvg
+
+    def update_margin_level(self):
+        return self.funds.margin / self.funds.equity if self.funds.equity > 0.0 else 0.0
+
+    def pending_fees(self):
+        return sum([t.taker_fee * abs(t.val) for t in self.open_trades])
+
+    def new_ord_id(self):
+        self.ord_ids += 1
+        return str(self.ord_ids)
+
+    def new_trade_id(self):
+        return str(len(self.closed_trades) + len(self.open_trades) + 1)
+
+    def update_funds(self):
+        """update all funds frfom all open orders and open trades"""
+        if len(self.open_trades) > 0:
+            self.funds.pending_fees   = sum([t.taker_fee * t.sz * self.price    for t in self.open_trades ] )
+            self.funds.margin         = sum([t.margin                           for t in self.open_trades ] )
+            self.funds.profit         = sum([t.sz * (self.price - t.entryprc)   for t in self.open_trades ] )
+        if len(self.ords) > 0:
+            self.funds.pending_margin = sum([o.margin                           for o in self.ords        ] )
+        self.funds.equity             = (self.funds.profit + self.funds.balance        +
+                                         self.funds.margin + self.funds.pending_margin )
+        self.funds.margin_level       =  self.funds.margin / self.funds.equity
+
+
+    def calc_avg_win(self):
+        total_wins = 0
+        for t in self.closed_trades:
+            if t.profit > 0:
+                total_wins += t.profit
+        return total_wins / self.tracking.total_winning_trades
+
+    def calc_avg_loss(self):
+        total_losses = 0
+        for t in self.closed_trades:
+            if t.profit < 0:
+                total_losses += t.profit
+        return total_losses / self.tracking.total_losing_trades
+
+    def calc_win_loss_ratio(self):
+        return self.tracking.total_winning_trades / self.tracking.total_losing_trades
+
+    def calc_comission_paid(self):
+        total_comission = 0
+        for t in self.closed_trades:
+            total_comission += t.val * t.taker_fee
+        return total_comission
+
+    def calc_avg_profit_trade(self):
+        total_profit = 0
+        if len(self.closed_trades) > 0:
+            for t in self.closed_trades:
+                total_profit += t.profit
+        return total_profit / self.tracking.total_trades
+
+    def calc_profit_factor(self):
+        return self.tracking.avg_win / self.tracking.avg_loss
+
+    def calc_margin(self, sz, lvg):
+        return abs(sz) * self.price / lvg
+
+    def calc_ord_sz(self, margin, lvg):
+        return margin * lvg / self.price
+
+    def calc_ord_value(self, sz):
+        return sz * self.price
+
+    @staticmethod
+    def calc_ord_profit(self, sz, entry_price, exit_prc):
+        return (exit_prc / entry_price - 1) * sz * entry_price
+
+    def calc_net_returns(self):
+        return self.funds.balance / self.cfg.initial_wallet
+
+    def calc_ord_net_profit(self, sz, entry_price, exit_prc):
+        return (exit_prc / entry_price - 1) * sz * entry_price - (
+            exit_prc / entry_price - 1
+        ) * sz * entry_price * self.cfg.taker_fee
+
+    def calc_ord_net_profit_pct(self, sz, entry_price, exit_prc):
+        return self.calc_ord_net_profit(
+            sz, entry_price, exit_prc
+        ) / self.calc_ord_value(sz)
+
+    def calculate_free_margin(self):
+        """calculate the free margin for the pair"""
+        return self.funds.balance - self.funds.margin
+
+    def calc_max_drawdown(self):
+        return self.tracking.peak_bal - self.tracking.low_bal
+
+    @staticmethod
+    def calc_ord_entry_value(sz, entryprc):
+        return sz * entryprc
+
+    def calc_ord_fee(self, sz, entryprc, exit_prc):
+        return (exit_prc / entryprc - 1) * sz * entryprc * self.cfg.taker_fee
+
+    def prepare_new_open_trade(self, t, ord):
+        """calculate values and set to trade. this is used by self.open_trade()"""
+        t.entryprc             = ord.price
+        t.sz                   = ord.sz
+        t.lvg                  = ord.lvg
+        t.margin               = self.calc_ord_margin(t.sz, t.lvg, t.entryprc)
+        t.val                  = t.sz * t.entryprc
+        t.status               = "open"
+        t.entry_time           = time.time()
+        t.entry_comment        = ord.comment if ord.comment else None
+        t.data.entry_bar_index = self.current_bar_index
+        t.data.entry_comment   = t.entry_comment
+        t.data.entry_id        = t.id
+        t.data.entryprc        = t.entryprc
+        t.data.entry_time      = t.entry_time
+        t.data.sz              = t.sz
+        t.data.direction       = "long" if t.sz / abs(t.sz) > 0 else "short"
+        t.data.commission      = t.taker_fee * abs(t.val)
+        t.data.exit_bar_index  = None
+        t.data.exit_comment    = None
+        t.data.exit_id         = None
+        t.data.exit_prc        = None
+        t.data.exit_time       = None
+        t.data.gross_profit    = None
+        t.data.net_profit      = None
+
+    def calculate_trade_close(self, trade, sz: float):
+        """calculate values and set to trade. this is used by self.close_trade()"""
+        trade.data.exit_bar_index = self.current_bar_index
+        trade.data.exit_comment = trade.entry_comment
+        trade.data.exit_id = trade.id
+        trade.data.exit_prc = self.price
+        trade.data.exit_time = time.time()
+        trade.data.gross_profit = (self.price / trade.entryprc - 1) * trade.val
+        trade.data.net_profit = trade.data.gross_profit - trade.data.commission
+        trade.data.commission = trade.taker_fee * abs(trade.val)
+
+    def open_trd(self, ord: ord):
+        """execute open trd from ord either from a market ord imediate open, or if triggered by a trailing entry or limit prc met. the triggerss are in a seperate function"""
+
+        t = trd(self, ord.direction, ord.type, ord.sz, ord.prc, ord.comment, ord.lvg, )
+        self.prepare_new_open_trd(t, ord)
+        self.funds.mrgn += t.mrgn
+
+        if ord.type == "pending":
+            self.funds.pending_mrgn -= t.mrgn
+            ord.type = "immediate"
+            ord.status = "filled"
+        else:
+            self.funds.bal      -= t.mrgn
+
+        self.open_trds.append(t)
+        self.trk.open_trds     += 1
+        self.trk.total_trds    += 1
+        self.trk.current_bal    = self.funds.bal
+        self.trk.peak_bal       = max(self.funds.bal                               , self.trk.peak_bal)
+        self.trk.low_bal        = min(self.funds.bal                               , self.trk.low_bal)
+        self.trk.max_draw_down  = (self.trk.peak_bal - self.trk.low_bal)
+
+    def size_gte_trd(self, trd,sz):
+        return (trd.sz * sz) and abs(sz) >= abs(trd.sz)
+
+    def close_trd(self, trd: trd, sz: float, comment: str):
+        """close trd"""
+        if trd == None:
+            trd = self.open_trds.pop(0)
+        close_is_total = self.size_gte_trd(trd,sz)
+        trd.tracking_info.exit_comment = comment
+        self.calculate_trd_close(trd, sz)
+        self.funds.mrgn           -= trd.mrgn
+        self.funds.pending_fees   -= trd.taker_fee * abs(trd.value)
+        self.funds.bal            += trd.tracking_info.net_pft
+        self.trk.open_trds        -= 1
+        self.trk.total_trds       += 1
+        self.trk.current_bal      = self.funds.bal
+        self.trk.peak_bal         = max(self.funds.bal                                                                                                 , self.trk.peak_bal)
+        self.trk.low_bal          = min(self.funds.bal                                                                                                 , self.trk.low_bal)
+        self.trk.max_draw_down    = (self.trk.peak_bal - self.trk.low_bal)
+        self.trk.gross_pft        += trd.tracking_info.gross_pft
+        self.trk.commission_paid  += trd.tracking_info.commission
+        self.trk.net_pft          = (self.trk.gross_pft - self.trk.commission_paid)
+        self.trk.max_draw_down    = (self.trk.peak_bal - self.trk.low_bal)
+        self.trk.percent_pftable  = ( self.trk.total_winning_trds / self.trk.total_trds if self.trk.total_trds > 0 else 0 if self.trk.total_trds > 0 else 0.0)
+        self.trk.avg_pft_per_trd  = ( self.trk.net_pft / self.trk.total_trds if self.trk.total_trds > 0 else 0 if self.trk.total_trds > 0 else 0.0)
+        self.trk.win_loss_ratio   = ( self.trk.total_winning_trds / self.trk.total_losing_trds if self.trk.total_losing_trds > 0 else 0 if self.trk.total_losing_trds > 0 else 0.0)
+        self.trk.pft_factor       = (self.trk.avg_win / self.trk.avg_loss if self.trk.avg_loss else 0.0)
+        self.open_trds.remove(trd) if  close_is_total else self.closed_trds.insert(trd,0)
+
+    def update_trades(self):
+        """update open trades"""
+        self.funds.open_profit = 0
+        for t in self.open_trades:
+
+            t.max_draw_down = max(t.max_draw_down, t.entryprc - self.price)
+            t.max_runup = max(t.max_runup, self.price - t.entryprc)
+            trade.profit(t, self.price)
+            self.funds.open_profit += t.profit
+
+            if t.sl_trail_enabled:
+                if t.sz > 0:
+                    if not t.sl_trail_activated:
+                        t.sl_trail_activated = self.price > t.entryprc * (
+                            1 + t.sl_trig_pct
+                        )
+                    if t.tsl_peak < self.price:
+                        t.tsl_peak = self.price
+                    if t.sl_trail_activated:
+                        if self.price < t.tsl_peak * (1 - t.sl_trail_pct):
+                            self.close_trade(t, t.sz, SL_TRAILNG)
+                else:
+                    if not t.sl_trail_activated:
+                        t.sl_trail_activated = self.price < t.entryprc * (
+                            1 - t.sl_trig_pct
+                        )
+                    if t.tsl_peak > self.price:
+                        t.tsl_peak = self.price
+                    if t.sl_trail_activated:
+                        if self.price > t.tsl_peak * (1 + t.sl_trail_pct):
+                            self.close_trade(t, t.sz, SL_TRAILNG)
+
+            if t.tp_enabled:
+                if t.sz > 0:
+                    if self.price > t.tp_targets[0]:
+                        self.close_trade(t, t.sz * t.tp_sz_pct, TP)
+                        t.tp_targets.pop(0)
+                else:
+                    if self.price < t.tp_targets[0]:
+                        self.close_trade(t, t.sz * t.tp_sz_pct, TP)
+                        t.tp_targets.pop(0)
+
+            if t.sl_enabled:
+                if t.sz > 0:
+                    if self.price < t.entryprc * (1 - t.sl_pct):
+                        self.close_trade(t, t.sz, SL)
+                else:
+                    if self.price > t.entryprc * (1 + t.sl_pct):
+                        self.close_trade(t, t.sz, SL)
+
+    def update_ords(self):
+        """update ords"""
+        for ord in self.ords:
+            if ord.status == "pending":
+                if ord.type == LIMIT:
+                    if ord.side == "buy":
+                        if self.price <= ord.price:
+                            self.open_trade(ord)
+                    else:
+                        if self.price >= ord.price:
+                            self.open_trade(ord)
+                elif ord.type == "trailing_stop":
+                    if ord.side == "buy":
+                        if self.price >= ord.price:
+                            self.open_trade(ord)
+                    else:
+                        if self.price <= ord.price:
+                            self.open_trade(ord)
+
+    def update_tracker(self):
+        self.tracking.current_balance = self.funds.balance
+        self.tracking.starting_balance = self.cfg.initial_wallet
+        self.tracking.peak_balance = max(self.tracking.peak_balance, self.funds.balance)
+        self.tracking.low_balance = min(self.tracking.low_balance, self.funds.balance)
+        self.tracking.total_active_trades = len(self.open_trades)
+        self.tracking.total_trades = len(self.closed_trades) + len(self.open_trades)
+
+        self.tracking.avg_win = self.calc_avg_win()
+        self.tracking.avg_loss = self.calc_avg_loss()
+        self.tracking.avg_profit_trade = self.calc_avg_profit_trade()
+        self.tracking.win_loss_ratio = self.calc_win_loss_ratio()
+        self.tracking.comission_paid = self.calc_comission_paid()
+        self.tracking.max_drawdown = self.calc_max_drawdown()
+        self.tracking.net_returns = self.calc_net_returns()
+        self.tracking.profit_factor = self.calc_profit_factor()
+
+    def cancel_all(self):
+        for o in self.ords:
+            self.cancel(o.id)
+
+    def cancel(self, id):
+        for o in self.ords:
+            if o.id == id:
+                self.ords.remove(o)
+                self.funds.margin -= o.margin
+                self.funds.balance += o.margin
+                self.funds.balance += o.val * self.cfg.maker_fee
+                self.funds.balance += o.val * self.cfg.taker_fee
+                break
+
+    def update(self):
+        self.update_trades()
+        self.update_ords()
+        self.update_funds()
+        self.update_tracker()
+
+
+class Signal_Engine:
+    """ 
+    this is where a user can use their own buy and sell signals to create and place orders
+    users can input  parameters such as stop loss, take proffits, trailing,.. any ff the parameters for types of orders.
+    they can also set a pre-planned exxit.
+    order scan opotionally accept an id  to identifyy which trade they want to modiffy  iff it exists, or creates if favailabble.
+    ffor cloing, if multiple entries exist with the same name, it will close all
+    """    
+    asds
+    
+    
+           
